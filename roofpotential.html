@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>p2m - Dach-PV-Explorer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        /* Basic page layout */
+        body {
+            display: flex;
+            font-family: 'Inter', sans-serif;
+            font-size: small;
+            background-color: #f2f2f2;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+        }
+        
+        /* Sidebar layout */
+        #sidebar {
+            width: 200px;
+            background-color: #f2f2f2;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Map layout */
+        #map-container {
+            flex-grow: 1;
+            height: 100%;
+        }
+
+        /* Header section with logo and title */
+        #header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        #header img {
+            width: 88px;
+            height: 49px;
+            margin-right: 10px;
+        }
+
+        h2 {
+            margin: 0;
+            font-size: 16px;
+        }
+
+        /* Slider styling */
+        #slider-container {
+            margin-bottom: 20px;
+        }
+
+        /* Map container */
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+
+        /* List of buildings and areas */
+        #buildingList {
+            margin-top: 10px;
+            list-style-type: none;
+            padding: 0;
+        }
+
+        #buildingList li {
+            margin-bottom: 5px;
+        }
+
+        /* CSS for the text on the map */
+        .area-label {
+            font-size: 12px;
+            color: black;
+            background-color: white;
+            padding: 2px;
+            border: 1px solid black;
+            border-radius: 3px;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Sidebar on the left -->
+    <div id="sidebar">
+        <div id="header">
+            <img src="https://power2move.de/wp-content/uploads/2024/01/signatur-martin-s-20-edited.png" alt="Logo">
+            <h2>p2m - Dach-PV-Explorer</h2>
+        </div>
+
+        <!-- Slider to change the radius -->
+        <div id="slider-container">
+            <label for="radiusSlider">Radius: <span id="radiusValue">100</span>m</label><br>
+            <input type="range" id="radiusSlider" min="50" max="1000" value="100">
+        </div>
+
+        <!-- List of buildings and their areas -->
+        <div id="buildingList">
+            <h3>Gebäude und berechnete Flächen</h3>
+            <ul id="buildingListContent"></ul>
+        </div>
+    </div>
+
+    <!-- Map container on the right -->
+    <div id="map-container">
+        <div id="map"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script>
+        // Initialize map
+        var map = L.map('map').setView([47.73509765947645, 10.3055469473449], 17);
+
+        // Add OpenStreetMap tile layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // Container for the list of building areas
+        var buildingList = document.getElementById("buildingListContent");
+
+        // Radius slider value
+        var radius = 100;
+        var radiusCircle;
+
+        // Update radius when slider is moved
+        document.getElementById('radiusSlider').addEventListener('input', function (event) {
+            radius = event.target.value;
+            document.getElementById('radiusValue').textContent = radius;
+            fetchBuildings(map.getCenter().lat, map.getCenter().lng); // Update buildings based on new radius
+        });
+
+        // Convert degrees to radians
+        function convertToRadian(input) {
+            return input * Math.PI / 180;
+        }
+
+        // Calculate area of a polygon
+        function calculatePolygonArea(coordinates) {
+            let area = 0;
+            if (coordinates.length > 2) {
+                for (let i = 0; i < coordinates.length - 1; i++) {
+                    let p1 = coordinates[i];
+                    let p2 = coordinates[i + 1];
+                    area += convertToRadian(p2.lon - p1.lon) *
+                            (2 + Math.sin(convertToRadian(p1.lat)) + Math.sin(convertToRadian(p2.lat)));
+                }
+                area = area * 6378137 * 6378137 / 2; // Convert to square meters
+            }
+            return Math.abs(area);
+        }
+
+        // Fetch building data from Overpass API
+        function fetchBuildings(lat, lon) {
+            var overpassUrl = `https://overpass-api.de/api/interpreter?data=[out:json];(way[building](around:${radius},${lat},${lon});node(w););out geom;`;
+
+            // Reset map and building list
+            buildingList.innerHTML = "";
+            if (radiusCircle) {
+                map.removeLayer(radiusCircle);
+            }
+            map.eachLayer(function (layer) {
+                if (layer instanceof L.CircleMarker || layer instanceof L.Marker || layer instanceof L.Circle || layer instanceof L.DivIcon) {
+                    map.removeLayer(layer);
+                }
+            });
+
+            // Add new radius circle to map
+            radiusCircle = L.circle([lat, lon], {
+                color: 'blue',
+                fillColor: '#aaf',
+                fillOpacity: 0.5,
+                radius: radius // Use updated radius value
+            }).addTo(map);
+
+            // Fetch data from Overpass API
+            fetch(overpassUrl)
+                .then(response => response.json())
+                .then(data => {
+                    var totalArea = 0;
+                    var buildingListHTML = "";
+
+                    // Process each building element
+                    data.elements.forEach(element => {
+                        if (element.geometry && element.geometry.length > 0) {
+                            var area = calculatePolygonArea(element.geometry);
+                            totalArea += area;
+
+                            // Find the center of the building
+                            var latSum = 0, lonSum = 0, count = 0;
+                            element.geometry.forEach(node => {
+                                latSum += node.lat;
+                                lonSum += node.lon;
+                                count++;
+                            });
+                            var latCenter = latSum / count;
+                            var lonCenter = lonSum / count;
+
+                            // Add area label to the map
+                            var areaLabel = L.divIcon({
+                                className: 'area-label',
+                                html: `${Math.round(area)} m²`
+                            });
+                            L.marker([latCenter, lonCenter], { icon: areaLabel }).addTo(map);
+
+                            // Add building to the list
+                            var address = (element.tags && element.tags['addr:housenumber'] && element.tags['addr:street']) 
+                                ? `${element.tags['addr:housenumber']} ${element.tags['addr:street']}` 
+                                : "Unbekannte Adresse";
+                            buildingListHTML += `<li>Adresse: ${address} - Fläche: ${Math.round(area)} m²</li>`;
+                        }
+                    });
+
+                    // Add total area to the list
+                    buildingListHTML += `<li><strong>Gesamte Fläche: ${Math.round(totalArea)} m²</strong></li>`;
+                    buildingList.innerHTML = buildingListHTML;
+                })
+                .catch(error => console.error("Fehler beim Abrufen der Gebäudedaten:", error));
+        }
+
+        // Initial building data fetch for starting location
+        fetchBuildings(47.73509765947645, 10.3055469473449);
+
+        // Map click event to fetch buildings at new location
+        map.on('click', function(e) {
+            fetchBuildings(e.latlng.lat, e.latlng.lng);
+        });
+
+    </script>
+
+</body>
+</html>
